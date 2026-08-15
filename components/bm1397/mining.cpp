@@ -5,6 +5,7 @@
 #include <limits.h>
 #include <stdio.h>
 #include <string.h>
+#include "esp_log.h" // new
 
 void free_bm_job(bm_job *job)
 {
@@ -38,24 +39,35 @@ void calculate_merkle_root_hash(const char *coinbase_tx, const uint8_t merkle_br
 // take a mining_notify struct with ascii hex strings and convert it to a bm_job struct
 void construct_bm_job(mining_notify *params, const char *merkle_root, const uint32_t version_mask, bm_job *new_job)
 {
-    new_job->version = params->version;
-    new_job->version_mask = version_mask;
+    (void)merkle_root; // new
+    (void)version_mask; // new
+
+    new_job->version = 0; // params->version; new
+    new_job->version_mask = 0; // version_mask; new
     new_job->starting_nonce = 0;
-    new_job->target = params->target;
-    new_job->ntime = params->ntime;
+    new_job->target = 0; // params->target; new
+    new_job->ntime = 0; // params->ntime; new
     new_job->pool_diff = params->difficulty;
 
-    hex2bin(merkle_root, new_job->merkle_root, 32);
+    memset(new_job->merkle_root, 0, 32); // new
+    memset(new_job->merkle_root_be, 0, 32); // new
+
+    memset(new_job->prev_block_hash, 0, HASH_SIZE); // new
+    memset(new_job->prev_block_hash_be, 0, HASH_SIZE); // new
+
+    ESP_LOGI("MINING", "USING ZERO HEADER TEST JOB"); // new
+
+    // hex2bin(merkle_root, new_job->merkle_root, 32); new
 
     // hex2bin(merkle_root, new_job.merkle_root_be, 32);
-    swap_endian_words(merkle_root, new_job->merkle_root_be);
-    reverse_bytes(new_job->merkle_root_be, 32);
+    // swap_endian_words(merkle_root, new_job->merkle_root_be); new
+    // reverse_bytes(new_job->merkle_root_be, 32); new
 
-    swap_endian_words_bin(params->_prev_block_hash, new_job->prev_block_hash, HASH_SIZE);
-    memcpy(new_job->prev_block_hash_be, params->_prev_block_hash, HASH_SIZE);
+    // swap_endian_words_bin(params->_prev_block_hash, new_job->prev_block_hash, HASH_SIZE); new
+    // memcpy(new_job->prev_block_hash_be, params->_prev_block_hash, HASH_SIZE); new
 
     // hex2bin(params->prev_block_hash, new_job.prev_block_hash_be, 32);
-    reverse_bytes(new_job->prev_block_hash_be, 32);
+    // reverse_bytes(new_job->prev_block_hash_be, 32); new
 }
 
 ///////cgminer nonce testing
