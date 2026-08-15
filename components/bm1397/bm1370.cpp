@@ -127,7 +127,7 @@ uint8_t BM1370::init(uint64_t frequency, uint16_t asic_count, uint32_t difficult
     // set 0x10
     setVrFrequency(vrFrequency);
 
-    send6(CMD_WRITE_ALL, 0x00, 0xA4, 0x90, 0x00, 0xFF, 0xFF);
+    send6(CMD_WRITE_ALL, 0x00, 0xA4, 0x80, 0x00, 0xFF, 0xFF); // 0x90 -> 0x80 new should disable version rolling
 
     return chip_counter;
 }
