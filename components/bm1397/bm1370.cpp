@@ -125,7 +125,7 @@ uint8_t BM1370::init(uint64_t frequency, uint16_t asic_count, uint32_t difficult
     doFrequencyTransition(frequency);
 
     // set 0x10
-    setVrFreqReg(0xFFFFFFFF); // setVrFrequency(vrFrequency);
+    setVrFreqReg(0x0BB80000); // setVrFrequency(vrFrequency);
 
     send6(CMD_WRITE_ALL, 0x00, 0xA4, 0x80, 0x00, 0xFF, 0xFF); // new
 
