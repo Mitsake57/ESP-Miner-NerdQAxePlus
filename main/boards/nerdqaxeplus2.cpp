@@ -34,8 +34,8 @@ NerdQaxePlus2::NerdQaxePlus2() : NerdQaxePlus() {
     m_maxCurrentA = 8.0f;
 
     m_asicMaxDifficulty = 2048;
-    m_asicMinDifficulty = 512;
-    m_asicMinDifficultyDualPool = 256;
+    m_asicMinDifficulty = 1; // 512 -> 1 new
+    m_asicMinDifficultyDualPool = 1; // 256 -> 1 new
 
 #ifdef NERDQAXEPLUS2
     m_theme = new ThemeNerdqaxeplus2();
