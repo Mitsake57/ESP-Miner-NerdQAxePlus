@@ -34,14 +34,24 @@ static const int STRATUM_ID_EXTRANONCE_SUBSCRIBE = 5;
 
 #define STRATUM_LAST_SETUP_ID STRATUM_ID_EXTRANONCE_SUBSCRIBE
 
+#define RAW_HEADER_SIZE 76
+
+
 typedef struct
 {
     char *job_id;
+
+    bool raw_header_mode;
+    uint8_t raw_header[RAW_HEADER_SIZE];
+
     uint8_t _prev_block_hash[HASH_SIZE];
+
     char *coinbase_1;
     char *coinbase_2;
+
     uint8_t _merkle_branches[MAX_MERKLE_BRANCHES][HASH_SIZE];
     size_t n_merkle_branches;
+
     uint32_t version;
     uint32_t version_mask;
     uint32_t target;

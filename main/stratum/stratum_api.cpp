@@ -25,6 +25,27 @@
 // The logging tag for ESP logging.
 static const char *TAG = "stratum_api";
 
+// Raw mining mode expects the exact 76 bytes of a Bitcoin-style header before
+// the nonce: version (4) || prevhash (32) || middle field (32) || ntime (4) || nbits (4).
+static bool isValidRawHeaderHex(const char *hex)
+{
+    if (hex == NULL || strlen(hex) != RAW_HEADER_SIZE * 2) {
+        return false;
+    }
+
+    for (size_t i = 0; i < RAW_HEADER_SIZE * 2; ++i) {
+        const char c = hex[i];
+        const bool is_hex = (c >= '0' && c <= '9') ||
+                            (c >= 'a' && c <= 'f') ||
+                            (c >= 'A' && c <= 'F');
+        if (!is_hex) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 StratumApi::StratumApi() : m_len(0), m_send_uid(1)
 {
     m_buffer = (char *) MALLOC(BIG_BUFFER_SIZE);
@@ -197,15 +218,138 @@ bool StratumApi::parseMethods(JsonDocument &doc, const char *method_str, Stratum
     switch (message->method) {
     case MINING_NOTIFY: {
         ESP_LOGI(TAG, "mining notify");
-        mining_notify *new_work = (mining_notify *) MALLOC(sizeof(mining_notify));
+
+        // CALLOC is important here because freeMiningNotify() may be called
+        // while only some fields have been initialized.
+        mining_notify *new_work = (mining_notify *) CALLOC(1, sizeof(mining_notify));
+        if (new_work == NULL) {
+            ESP_LOGE(TAG, "Failed to allocate mining_notify");
+            return false;
+        }
 
         JsonArray params = doc["params"].as<JsonArray>();
 
-        new_work->job_id = strdup(params[0].as<const char *>());
-        hex2bin(params[1].as<const char *>(), new_work->_prev_block_hash, HASH_SIZE);
+        // -----------------------------------------------------------------
+        // Raw-header mode
+        // -----------------------------------------------------------------
+        // Format:
+        // {
+        //   "id": null,
+        //   "method": "mining.notify",
+        //   "params": ["<job_id>", "<152 hex chars = 76 bytes>", true]
+        // }
+        //
+        // The 76 bytes are the exact header bytes before the 4-byte nonce:
+        //   [0..3]   version
+        //   [4..35]  prevhash / arbitrary bytes
+        //   [36..67] merkle-root field / arbitrary bytes
+        //   [68..71] ntime / arbitrary bytes
+        //   [72..75] nbits / arbitrary bytes
+        //
+        // No coinbase or Merkle-root calculation is performed here.
+        if (params.size() == 3) {
+            const char *job_id = params[0].as<const char *>();
+            const char *raw_header_hex = params[1].as<const char *>();
 
-        new_work->coinbase_1 = strdup(params[2].as<const char *>());
-        new_work->coinbase_2 = strdup(params[3].as<const char *>());
+            if (job_id == NULL || !isValidRawHeaderHex(raw_header_hex)) {
+                ESP_LOGE(TAG, "Invalid raw mining.notify: expected job id and exactly %d hex characters",
+                         RAW_HEADER_SIZE * 2);
+                freeMiningNotify(new_work);
+                safe_free(new_work);
+                return false;
+            }
+
+            new_work->job_id = strdup(job_id);
+            if (new_work->job_id == NULL) {
+                ESP_LOGE(TAG, "Failed to allocate raw job id");
+                freeMiningNotify(new_work);
+                safe_free(new_work);
+                return false;
+            }
+
+            new_work->raw_header_mode = true;
+
+            const size_t converted =
+                hex2bin(raw_header_hex, new_work->raw_header, RAW_HEADER_SIZE);
+            if (converted != RAW_HEADER_SIZE) {
+                ESP_LOGE(TAG, "Failed to decode complete raw header");
+                freeMiningNotify(new_work);
+                safe_free(new_work);
+                return false;
+            }
+
+            // Keep these legacy fields populated because other parts of the
+            // current V1 job code still read them. memcpy preserves the exact
+            // serialized bytes on the ESP32's little-endian representation.
+            memcpy(&new_work->version, new_work->raw_header + 0, 4);
+            memcpy(new_work->_prev_block_hash, new_work->raw_header + 4, HASH_SIZE);
+            memcpy(&new_work->ntime, new_work->raw_header + 68, 4);
+            memcpy(&new_work->target, new_work->raw_header + 72, 4);
+
+            // create_job_mining_notify() currently strdup()s these fields, so
+            // give it valid empty strings even though raw mode never uses them.
+            new_work->coinbase_1 = strdup("");
+            new_work->coinbase_2 = strdup("");
+            if (new_work->coinbase_1 == NULL || new_work->coinbase_2 == NULL) {
+                ESP_LOGE(TAG, "Failed to allocate raw-mode compatibility strings");
+                freeMiningNotify(new_work);
+                safe_free(new_work);
+                return false;
+            }
+
+            new_work->n_merkle_branches = 0;
+
+            message->mining_notification = new_work;
+            message->should_abandon_work = params[2].as<bool>();
+
+            ESP_LOGI(TAG, "Received raw 76-byte header for job %s", new_work->job_id);
+            ESP_LOG_BUFFER_HEX_LEVEL(TAG, new_work->raw_header, RAW_HEADER_SIZE, ESP_LOG_INFO);
+            break;
+        }
+
+        // -----------------------------------------------------------------
+        // Normal Stratum V1 mining.notify
+        // -----------------------------------------------------------------
+        // Preserve the existing standard path unchanged. A normal notify has:
+        // job_id, prevhash, coinbase1, coinbase2, merkle branches, version,
+        // nbits, ntime, clean_jobs.
+        if (params.size() < 9) {
+            ESP_LOGE(TAG, "Invalid mining.notify: expected either 3 raw-mode params or at least 9 standard params");
+            freeMiningNotify(new_work);
+            safe_free(new_work);
+            return false;
+        }
+
+        new_work->raw_header_mode = false;
+
+        const char *job_id = params[0].as<const char *>();
+        const char *prevhash = params[1].as<const char *>();
+        const char *coinbase_1 = params[2].as<const char *>();
+        const char *coinbase_2 = params[3].as<const char *>();
+        const char *version = params[5].as<const char *>();
+        const char *target = params[6].as<const char *>();
+        const char *ntime = params[7].as<const char *>();
+
+        if (job_id == NULL || prevhash == NULL || coinbase_1 == NULL || coinbase_2 == NULL ||
+            version == NULL || target == NULL || ntime == NULL) {
+            ESP_LOGE(TAG, "Invalid standard mining.notify: missing required string field");
+            freeMiningNotify(new_work);
+            safe_free(new_work);
+            return false;
+        }
+
+        new_work->job_id = strdup(job_id);
+        new_work->coinbase_1 = strdup(coinbase_1);
+        new_work->coinbase_2 = strdup(coinbase_2);
+
+        if (new_work->job_id == NULL || new_work->coinbase_1 == NULL || new_work->coinbase_2 == NULL) {
+            ESP_LOGE(TAG, "Failed to allocate standard mining.notify strings");
+            freeMiningNotify(new_work);
+            safe_free(new_work);
+            return false;
+        }
+
+        hex2bin(prevhash, new_work->_prev_block_hash, HASH_SIZE);
 
         JsonArray merkle_branch = params[4].as<JsonArray>();
         new_work->n_merkle_branches = merkle_branch.size();
@@ -217,17 +361,22 @@ bool StratumApi::parseMethods(JsonDocument &doc, const char *method_str, Stratum
         }
 
         for (size_t i = 0; i < new_work->n_merkle_branches; i++) {
-            hex2bin(merkle_branch[i].as<const char *>(), new_work->_merkle_branches[i], HASH_SIZE);
+            const char *branch = merkle_branch[i].as<const char *>();
+            if (branch == NULL) {
+                ESP_LOGE(TAG, "Invalid Merkle branch at index %u", (unsigned) i);
+                freeMiningNotify(new_work);
+                safe_free(new_work);
+                return false;
+            }
+            hex2bin(branch, new_work->_merkle_branches[i], HASH_SIZE);
         }
 
-        new_work->version = strtoul(params[5].as<const char *>(), NULL, 16);
-        new_work->target = strtoul(params[6].as<const char *>(), NULL, 16);
-        new_work->ntime = strtoul(params[7].as<const char *>(), NULL, 16);
+        new_work->version = strtoul(version, NULL, 16);
+        new_work->target = strtoul(target, NULL, 16);
+        new_work->ntime = strtoul(ntime, NULL, 16);
 
         message->mining_notification = new_work;
-
-        int paramsLength = params.size();
-        message->should_abandon_work = params[paramsLength - 1].as<bool>();
+        message->should_abandon_work = params[params.size() - 1].as<bool>();
         break;
     }
     case MINING_SET_DIFFICULTY:

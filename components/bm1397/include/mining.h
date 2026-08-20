@@ -35,9 +35,13 @@ char *construct_coinbase_tx(const char *coinbase_1, const char *coinbase_2, cons
 void calculate_merkle_root_hash(const char *coinbase_tx, const uint8_t merkle_branches[][32], const int num_merkle_branches,
                                 char merkle_root_hash[65]);
 
+// Existing normal Stratum V1 path.
 void construct_bm_job(mining_notify *params, const char *merkle_root, const uint32_t version_mask, bm_job *new_job);
+
+// Raw-header path. params->raw_header must contain exactly RAW_HEADER_SIZE
+// serialized header bytes (76 bytes: everything except the nonce).
+void construct_raw_bm_job(mining_notify *params, const uint32_t version_mask, bm_job *new_job);
 
 double test_nonce_value(const bm_job *job, const uint32_t nonce, const uint32_t rolled_version);
 
 char *extranonce_2_generate(uint32_t extranonce_2, uint32_t length);
-

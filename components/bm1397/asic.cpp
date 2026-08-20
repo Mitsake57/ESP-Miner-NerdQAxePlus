@@ -332,18 +332,44 @@ uint8_t Asic::sendWork(uint32_t job_id, bm_job *next_bm_job)
     BM1368_job job;
 
     job.job_id = jobToAsicId(job_id);
-
     job.num_midstates = 0x01;
-    memcpy(&job.starting_nonce, &next_bm_job->starting_nonce, 4);
-    memcpy(&job.nbits, &next_bm_job->target, 4);
-    memcpy(&job.ntime, &next_bm_job->ntime, 4);
+
+    /*
+     * IMPORTANT FOR RAW-HEADER MODE:
+     *
+     * No Bitcoin-specific computation happens here. All fields have already
+     * been prepared by construct_bm_job() / construct_raw_bm_job().
+     *
+     * The *_be buffers are the ASIC wire-format copies. The logical copies
+     * remain in bm_job for host-side nonce verification.
+     */
+    memcpy(job.starting_nonce, &next_bm_job->starting_nonce, 4);
+    memcpy(job.nbits, &next_bm_job->target, 4);
+    memcpy(job.ntime, &next_bm_job->ntime, 4);
     memcpy(job.merkle_root, next_bm_job->merkle_root_be, 32);
     memcpy(job.prev_block_hash, next_bm_job->prev_block_hash_be, 32);
-    memcpy(&job.version, &next_bm_job->version, 4);
+    memcpy(job.version, &next_bm_job->version, 4);
 
-    send((TYPE_JOB | GROUP_SINGLE | CMD_WRITE), (uint8_t*) &job, sizeof(BM1368_job));
+    /*
+     * Temporary tracing for the arbitrary-header experiment.
+     *
+     * This prints the exact BM1368/BM1370 job payload before send() adds the
+     * 0x55AA framing, packet header/length and CRC. It is deliberately DEBUG
+     * level so normal mining is not flooded with large packet dumps.
+     */
+    ESP_LOGD(TAG,
+             "ASIC job id=%u version=%08lx ntime=%08lx nbits=%08lx start_nonce=%08lx",
+             job.job_id,
+             (unsigned long) next_bm_job->version,
+             (unsigned long) next_bm_job->ntime,
+             (unsigned long) next_bm_job->target,
+             (unsigned long) next_bm_job->starting_nonce);
 
-    // we return it because different asics calculate it differently
+    ESP_LOG_BUFFER_HEX_LEVEL(TAG, (uint8_t *) &job, sizeof(BM1368_job), ESP_LOG_DEBUG);
+
+    send((TYPE_JOB | GROUP_SINGLE | CMD_WRITE), (uint8_t *) &job, sizeof(BM1368_job));
+
+    // We return it because different ASICs calculate/map the job ID differently.
     return job.job_id;
 }
 

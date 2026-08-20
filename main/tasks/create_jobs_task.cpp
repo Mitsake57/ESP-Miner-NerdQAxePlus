@@ -49,6 +49,12 @@ class MiningInfoV1 : public MiningInfoBase {
     uint32_t active_stratum_difficulty = 8192;
     uint32_t version_mask = 0;
 
+    // Job validity and identity must not depend on arbitrary header fields.
+    // In particular, raw headers are allowed to contain ntime == 0 and
+    // consecutive jobs are allowed to reuse the same ntime.
+    bool has_job = false;
+    uint32_t job_generation = 0;
+
   public:
     MiningInfoV1()
     {
@@ -71,24 +77,49 @@ class MiningInfoV1 : public MiningInfoBase {
 
     bm_job* buildBmJob(uint32_t extranonce_2, int pool_id, uint32_t asic_diff) override
     {
-        // generate extranonce2 hex string
+        // Raw-header mode: the 76 bytes supplied by the Stratum server are
+        // authoritative. Do not build a coinbase transaction and do not
+        // calculate a Merkle root here.
+        if (current_job->raw_header_mode) {
+            bm_job *next_job = (bm_job *) CALLOC(1, sizeof(bm_job));
+
+            // construct_raw_bm_job() is responsible only for converting the
+            // exact 76-byte logical header into the byte/word ordering required
+            // by the BM ASIC job format. It must not derive or replace any
+            // header field.
+            construct_raw_bm_job(current_job, version_mask, next_job);
+
+            next_job->jobid = strdup(current_job->job_id ? current_job->job_id : "");
+            // The existing result/submission path expects this pointer to exist.
+            // Raw jobs do not use extranonce2.
+            next_job->extranonce2 = strdup("");
+
+            next_job->pool_diff = active_stratum_difficulty;
+            next_job->pool_id = pool_id;
+            next_job->asic_diff = asic_diff;
+
+            return next_job;
+        }
+
+        // Normal Stratum V1 path.
+        // Generate extranonce2 hex string.
         char extranonce_2_str[extranonce_2_len * 2 + 1]; // +1 zero termination
         snprintf(extranonce_2_str, sizeof(extranonce_2_str), "%0*lx", (int) extranonce_2_len * 2, (unsigned long) extranonce_2);
 
-        // generate coinbase tx
+        // Generate coinbase tx.
         int coinbase_tx_len = strlen(current_job->coinbase_1) + strlen(extranonce_str) + strlen(extranonce_2_str) +
                               strlen(current_job->coinbase_2);
         char *coinbase_tx = (char *) MALLOC(coinbase_tx_len + 1);
         snprintf(coinbase_tx, coinbase_tx_len + 1, "%s%s%s%s", current_job->coinbase_1, extranonce_str,
                  extranonce_2_str, current_job->coinbase_2);
 
-        // calculate merkle root
+        // Calculate Merkle root only for normal Stratum jobs.
         char merkle_root[65];
         calculate_merkle_root_hash(coinbase_tx, current_job->_merkle_branches, current_job->n_merkle_branches,
                                    merkle_root);
         free(coinbase_tx);
 
-        // we need malloc because we will save it in the job array
+        // We need malloc because we will save it in the job array.
         bm_job *next_job = (bm_job *) malloc(sizeof(bm_job));
         construct_bm_job(current_job, merkle_root, version_mask, next_job);
         next_job->jobid = strdup(current_job->job_id);
@@ -102,13 +133,13 @@ class MiningInfoV1 : public MiningInfoBase {
 
     bool isValid() const override
     {
-        return current_job->ntime != 0;
+        return has_job;
     }
 
-    bool isNewWork(uint32_t &last_ntime) const override
+    bool isNewWork(uint32_t &last_job_generation) const override
     {
-        if (last_ntime != current_job->ntime) {
-            last_ntime = current_job->ntime;
+        if (last_job_generation != job_generation) {
+            last_job_generation = job_generation;
             return true;
         }
         return false;
@@ -131,13 +162,17 @@ class MiningInfoV1 : public MiningInfoBase {
 
     void invalidate() override
     {
-        // mark as invalid
-        current_job->ntime = 0;
+        has_job = false;
+
         safe_free(extranonce_str);
         safe_free(next_extranonce_str);
         safe_free(current_job->job_id);
         safe_free(current_job->coinbase_1);
         safe_free(current_job->coinbase_2);
+
+        // Clear the fixed-size/current-job data as well. This is not used as
+        // the validity marker; has_job is authoritative.
+        memset(current_job, 0, sizeof(mining_notify));
     }
 
     // --- V1-specific methods ---
@@ -175,7 +210,7 @@ class MiningInfoV1 : public MiningInfoBase {
 
     void create_job_mining_notify(mining_notify *notify)
     {
-        // do we have a pending extranonce switch?
+        // Do we have a pending extranonce switch?
         if (next_extranonce_str) {
             safe_free(extranonce_str);
             extranonce_str = strdup(next_extranonce_str);
@@ -188,14 +223,24 @@ class MiningInfoV1 : public MiningInfoBase {
         safe_free(current_job->coinbase_1);
         safe_free(current_job->coinbase_2);
 
-        // copy trivial types
+        // Copy all fixed-size fields, including raw_header_mode and raw_header.
+        // The three strings are duplicated below so current_job owns them.
         memcpy(current_job, notify, sizeof(mining_notify));
-        // duplicate dynamic strings with unknown length
-        current_job->job_id = strdup(notify->job_id);
-        current_job->coinbase_1 = strdup(notify->coinbase_1);
-        current_job->coinbase_2 = strdup(notify->coinbase_2);
 
-        // set active difficulty with the mining.notify command
+        current_job->job_id = strdup(notify->job_id ? notify->job_id : "");
+        current_job->coinbase_1 = strdup(notify->coinbase_1 ? notify->coinbase_1 : "");
+        current_job->coinbase_2 = strdup(notify->coinbase_2 ? notify->coinbase_2 : "");
+
+        // Validity and new-work detection are deliberately independent of ntime
+        // and of every other user-controlled header byte.
+        has_job = true;
+        job_generation++;
+        if (job_generation == 0) {
+            // Reserve zero for the initial "nothing seen yet" marker.
+            job_generation = 1;
+        }
+
+        // Set active difficulty with the mining.notify command.
         active_stratum_difficulty = stratum_difficulty;
     }
 };
@@ -302,7 +347,7 @@ void create_jobs_task(void *pvParameters)
         return;
     }
 
-    uint32_t last_ntime[2]{0};
+    uint32_t last_job_generation[2]{0};
     uint64_t last_submit_time = 0;
     uint32_t extranonce_2 = 0;
 
@@ -346,7 +391,7 @@ void create_jobs_task(void *pvParameters)
                 continue;
             }
 
-            if (mi->isNewWork(last_ntime[active_pool])) {
+            if (mi->isNewWork(last_job_generation[active_pool])) {
                 ESP_LOGI(TAG, "(%s) New Work Received %s", active_pool_str, mi->getJobId());
             }
 
