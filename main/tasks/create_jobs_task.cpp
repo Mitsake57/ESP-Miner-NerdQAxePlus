@@ -2,6 +2,7 @@
 #include <pthread.h>
 #include <string.h>
 #include <sys/time.h>
+#include <stdio.h>
 
 #include "esp_log.h"
 #include "esp_system.h"
@@ -83,16 +84,40 @@ class MiningInfoV1 : public MiningInfoBase {
         if (current_job->raw_header_mode) {
             bm_job *next_job = (bm_job *) CALLOC(1, sizeof(bm_job));
 
-            // construct_raw_bm_job() is responsible only for converting the
-            // exact 76-byte logical header into the byte/word ordering required
-            // by the BM ASIC job format. It must not derive or replace any
-            // header field.
-            construct_raw_bm_job(current_job, version_mask, next_job);
+            // Make a temporary copy. Do not modify current_job itself because
+            // it contains the original 76 bytes received from Stratum.
+            mining_notify raw_job = *current_job;
 
-            next_job->jobid = strdup(current_job->job_id ? current_job->job_id : "");
-            // The existing result/submission path expects this pointer to exist.
-            // Raw jobs do not use extranonce2.
-            next_job->extranonce2 = strdup("");
+            // Use bytes 8..11 as the 4-byte extranonce2.
+            //
+            // Header layout:
+            //   0..3   version
+            //   4..7   random prefix supplied by Python
+            //   8..11  extranonce2 supplied by firmware
+            //   12..75 claim data
+            //
+            // Store it in big-endian byte order so the bytes correspond directly
+            // to the hexadecimal extranonce2 string returned through Stratum.
+            raw_job.raw_header[8]  = (extranonce_2 >> 24) & 0xFF;
+            raw_job.raw_header[9]  = (extranonce_2 >> 16) & 0xFF;
+            raw_job.raw_header[10] = (extranonce_2 >> 8) & 0xFF;
+            raw_job.raw_header[11] = extranonce_2 & 0xFF;
+
+            construct_raw_bm_job(&raw_job, version_mask, next_job);
+
+            next_job->jobid =
+                strdup(current_job->job_id ? current_job->job_id : "");
+
+            // Save exactly the extranonce that was inserted into this ASIC job.
+            char extranonce_2_str[9];
+            snprintf(
+                extranonce_2_str,
+                sizeof(extranonce_2_str),
+                "%08lx",
+                (unsigned long) extranonce_2
+            );
+
+            next_job->extranonce2 = strdup(extranonce_2_str);
 
             next_job->pool_diff = active_stratum_difficulty;
             next_job->pool_id = pool_id;
