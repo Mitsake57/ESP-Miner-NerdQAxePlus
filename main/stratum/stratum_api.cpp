@@ -6,6 +6,8 @@
 
 #include <cstddef>
 
+#include "esp_timer.h" // new
+
 #include "stratum_api.h" // Assumes that types like StratumApiV1Message,
                          // mining_notify, STRATUM_ID_SUBSCRIBE, etc., are defined here.
 #include "ArduinoJson.h"
@@ -634,16 +636,56 @@ bool StratumApi::authenticate(StratumTransport *transport, const char *username,
 //--------------------------------------------------------------------
 // submitShare()
 //--------------------------------------------------------------------
-bool StratumApi::submitShare(StratumTransport *transport, const char *username, const char *jobid, const char *extranonce_2, uint32_t ntime,
-                             uint32_t nonce, uint32_t version)
+bool StratumApi::submitShare( // new major changes
+    StratumTransport *transport,
+    const char *username,
+    const char *jobid,
+    const char *extranonce_2,
+    uint32_t ntime,
+    uint32_t nonce,
+    uint32_t version)
 {
-    snprintf(m_requestBuffer, BUFFER_SIZE,
-             "{\"id\": %d, \"method\": \"mining.submit\", \"params\": [\"%s\", \"%s\", \"%s\", \"%08lx\", \"%08lx\", \"%08lx\"]}\n",
-             m_send_uid++, username, jobid, extranonce_2, ntime, nonce, version);
+    static uint64_t submit_count = 0;
+    static uint64_t total_format_us = 0;
+    static uint64_t total_send_us = 0;
 
-    return send(transport, m_requestBuffer);
+    int64_t format_start = esp_timer_get_time();
+
+    snprintf(
+        m_requestBuffer,
+        BUFFER_SIZE,
+        "{\"id\": %d, \"method\": \"mining.submit\", "
+        "\"params\": [\"%s\", \"%s\", \"%s\", \"%08lx\", \"%08lx\", \"%08lx\"]}\n",
+        m_send_uid++,
+        username,
+        jobid,
+        extranonce_2,
+        ntime,
+        nonce,
+        version
+    );
+
+    total_format_us += esp_timer_get_time() - format_start;
+
+    int64_t send_start = esp_timer_get_time();
+
+    bool result = send(transport, m_requestBuffer);
+
+    total_send_us += esp_timer_get_time() - send_start;
+
+    submit_count++;
+
+    if (submit_count % 1000 == 0) {
+        ESP_LOGI(
+            TAG,
+            "SUBMIT PROFILE: format=%llu us, send=%llu us",
+            total_format_us / submit_count,
+            total_send_us / submit_count
+        );
+    }
+
+    return result;
 }
-
 //--------------------------------------------------------------------
 // configureVersionRolling()
 //--------------------------------------------------------------------
