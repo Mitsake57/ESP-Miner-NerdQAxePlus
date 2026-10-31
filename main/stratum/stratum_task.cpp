@@ -401,7 +401,7 @@ void StratumTaskV1::protocolLoop()
             return;
         }
 
-        ESP_LOGI(m_tag, "rx: %s", line); // debug incoming stratum messages
+        // ESP_LOGI(m_tag, "rx: %s", line); // debug incoming stratum messages
 
         PSRAMAllocator allocator;
         JsonDocument doc(&allocator);

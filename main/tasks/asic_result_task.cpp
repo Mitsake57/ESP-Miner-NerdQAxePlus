@@ -100,7 +100,7 @@ void ASIC_result_task(void *pvParameters)
         // log the ASIC response, including pool and best session difficulty using human-readable SI formatting
         // we only show responses >= maxAsicDifficulty to avoid spamming the log
         // change for dual pool because the pool with lower % can reduce asic HW difficulty
-        if (nonce_diff >= board->getAsicMaxDifficulty() || nonce_diff >= job->pool_diff) {
+        if (nonce_diff >= board->getAsicMaxDifficulty()) { // new
             ESP_LOGI(TAG, "(%s) Job ID: %02X AsicNr: %d Ver: %08" PRIX32 " Nonce %08" PRIX32 "; Extranonce2 %s diff %.1f/%lu/%s",
                 pool_str, asic_job_id, asic_result.asic_nr, asic_result.rolled_version, asic_result.nonce, job->extranonce2,
                 nonce_diff, job->pool_diff, bestDiffString);

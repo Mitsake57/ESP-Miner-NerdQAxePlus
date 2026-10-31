@@ -221,7 +221,7 @@ void StratumManager::dispatch(int pool, JsonDocument &doc)
 
     case STRATUM_RESULT: {
         if (m_stratum_api_v1_message.response_success) {
-            ESP_LOGI(tag, "message result accepted");
+            // ESP_LOGI(tag, "message result accepted");
             acceptedShare(pool);
         } else {
             ESP_LOGW(tag, "message result rejected");
