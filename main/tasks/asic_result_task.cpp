@@ -176,7 +176,7 @@ void ASIC_result_task(void *pvParameters)
 
         STRATUM_MANAGER->checkForBestDiff(job->pool_id, nonce_diff, job->target);
 
-        STRATUM_MANAGER->checkForFoundBlock(job->pool_id, nonce_diff, job->target);
+        // STRATUM_MANAGER->checkForFoundBlock(job->pool_id, nonce_diff, job->target); disabled to remove the additional logging and lower the latency
 
 
         free_bm_job(job);
