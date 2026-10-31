@@ -553,7 +553,7 @@ void StratumApi::freeMiningNotify(mining_notify *params)
 //--------------------------------------------------------------------
 bool StratumApi::send(StratumTransport *transport, const char *message)
 {
-    debugTx(message);
+    // debugTx(message);
 
     if (!transport->isConnected()) {
         ESP_LOGI(TAG, "Socket not connected. Cannot send message.");
