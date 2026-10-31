@@ -1,4 +1,5 @@
 #include <string.h>
+#include "esp_timer.h" // new
 
 #include "esp_log.h"
 
@@ -35,6 +36,14 @@ static inline uint64_t make_key(uint32_t nonce, uint32_t version)
 
 void ASIC_result_task(void *pvParameters)
 {
+    static uint64_t profile_count = 0;      // new
+    static int64_t last_result_us = 0;      // new
+
+    static uint64_t total_gap_us = 0;       // new
+    static uint64_t total_verify_us = 0;    // new
+    static uint64_t total_submit_us = 0;    // new
+
+
     Board* board = SYSTEM_MODULE.getBoard();
     Asic* asics = board->getAsics();
 
@@ -85,11 +94,30 @@ void ASIC_result_task(void *pvParameters)
             continue;
         }
 
+        static uint64_t result_count = 0; // new
+        static uint64_t gap_count = 0; // new
+
+        int64_t result_us = esp_timer_get_time(); // new
+
+        if (last_result_us != 0) { // new
+            total_gap_us += result_us - last_result_us;
+            gap_count++;
+        }
+
+        last_result_us = result_us; // new
+        result_count++; // new
+
         // now we have the original job and can `or` the version
         asic_result.rolled_version |= job->version;
 
+        
+        int64_t verify_start = esp_timer_get_time(); // new
+
         // check the nonce difficulty
-        double nonce_diff = test_nonce_value(job, asic_result.nonce, asic_result.rolled_version);
+        double nonce_diff =
+            test_nonce_value(job, asic_result.nonce, asic_result.rolled_version);
+
+        total_verify_us += esp_timer_get_time() - verify_start; // new
 
         // get best known session diff
         char bestDiffString[16];
@@ -118,9 +146,32 @@ void ASIC_result_task(void *pvParameters)
         }
 
         // send duplicates to the server (they will get rejected and counted as rejected)
-        if (nonce_diff >= job->pool_diff) {
-            STRATUM_MANAGER->submitShare(job->pool_id, job->jobid, job->extranonce2, job->ntime, asic_result.nonce,
-                                    asic_result.rolled_version, job->version);
+        if (nonce_diff >= job->pool_diff) { 
+            int64_t submit_start = esp_timer_get_time(); // new
+
+            STRATUM_MANAGER->submitShare(
+                job->pool_id,
+                job->jobid,
+                job->extranonce2,
+                job->ntime,
+                asic_result.nonce,
+                asic_result.rolled_version,
+                job->version
+            );
+
+            total_submit_us += esp_timer_get_time() - submit_start; // new
+
+            profile_count++; // new
+
+            if (profile_count % 1000 == 0) {
+                ESP_LOGI(
+                    TAG,
+                    "PROFILE: avg ASIC result gap=%llu us, verify=%llu us, submit=%llu us",
+                    gap_count ? total_gap_us / gap_count : 0,
+                    result_count ? total_verify_us / result_count : 0,
+                    profile_count ? total_submit_us / profile_count : 0
+                );
+            }
         }
 
         STRATUM_MANAGER->checkForBestDiff(job->pool_id, nonce_diff, job->target);
