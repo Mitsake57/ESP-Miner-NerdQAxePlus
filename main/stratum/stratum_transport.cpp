@@ -1,6 +1,10 @@
 #include <errno.h>
 #include <string.h>
 
+#include <sys/socket.h>     // new
+#include <netinet/in.h>     // new
+#include <netinet/tcp.h>    // new
+
 #include "esp_log.h"
 #include "esp_crt_bundle.h"
 #include "esp_transport.h"
@@ -9,6 +13,9 @@
 
 #include "nvs_config.h"
 #include "stratum_transport.h"
+
+// esp_transport_get_socket() exists in IDF 5.3 but is only declared in a private header, so declare it here
+extern "C" int esp_transport_get_socket(esp_transport_handle_t t); // new
 
 static const char* TAG = "stratum_transport";
 
@@ -57,6 +64,9 @@ bool StratumTransport::connect(const char* host, const char* ip, uint16_t port)
         close();
         return false;
     }
+
+    // Disable Nagle's algorithm for latency-sensitive Stratum submissions
+    setNoDelay_(); // new
 
     ESP_LOGI(TAG, "Connected");
     return true;
@@ -152,5 +162,35 @@ void StratumTransport::applyKeepAlive_()
         esp_transport_ssl_set_keep_alive(m_t, &ka);
     } else {
         esp_transport_tcp_set_keep_alive(m_t, &ka);
+    }
+}
+
+void StratumTransport::setNoDelay_() // new
+{
+    int sock = esp_transport_get_socket(m_t);
+
+    if (sock < 0) {
+        ESP_LOGW(TAG, "Could not get socket fd to set TCP_NODELAY");
+        return;
+    }
+
+    int nodelay = 1;
+
+    if (setsockopt(
+            sock,
+            IPPROTO_TCP,
+            TCP_NODELAY,
+            &nodelay,
+            sizeof(nodelay)
+        ) < 0)
+    {
+        ESP_LOGW(
+            TAG,
+            "Failed to set TCP_NODELAY (errno=%d: %s)",
+            errno,
+            strerror(errno)
+        );
+    } else {
+        ESP_LOGI(TAG, "TCP_NODELAY enabled");
     }
 }
