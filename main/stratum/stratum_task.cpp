@@ -367,9 +367,28 @@ void StratumTaskV1::submitTaskWrapper(void *pvParameters) // new
 
 void StratumTaskV1::submitTask() // new
 {
+    static constexpr size_t MAX_BATCH_SIZE = 16;
+    static constexpr size_t BATCH_BUFFER_SIZE = 8192;
+
+    char *batchBuffer =
+        static_cast<char *>(MALLOC(BATCH_BUFFER_SIZE));
+
+    if (batchBuffer == nullptr) {
+        ESP_LOGE(m_tag, "Failed to allocate submit batch buffer");
+        vTaskDelete(NULL);
+        return;
+    }
+
     SubmitRequest request;
 
+    uint64_t total_batches = 0;
+    uint64_t total_batch_shares = 0;
+    uint64_t total_format_us = 0;
+    uint64_t total_send_us = 0;
+
     while (1) {
+
+        // Wait for at least one share.
         if (xQueueReceive(
                 m_submitQueue,
                 &request,
@@ -384,25 +403,116 @@ void StratumTaskV1::submitTask() // new
             continue;
         }
 
-        m_stratumAPI.submitShare(
-            m_transport,
-            m_config->getUser(),
-            request.jobid,
-            request.extranonce2,
-            request.ntime,
-            request.nonce,
-            request.version_delta
-        );
+        size_t used = 0;
+        size_t batch_count = 0;
 
-        m_submitSentCount++;
+        int64_t format_start = esp_timer_get_time();
 
-        if (m_submitSentCount % 1000 == 0) {
+        while (1) {
+
+            size_t written =
+                m_stratumAPI.formatSubmitShare(
+                    batchBuffer + used,
+                    BATCH_BUFFER_SIZE - used,
+                    m_config->getUser(),
+                    request.jobid,
+                    request.extranonce2,
+                    request.ntime,
+                    request.nonce,
+                    request.version_delta
+                );
+
+            if (written == 0) {
+                ESP_LOGE(
+                    m_tag,
+                    "Failed to format submit batch"
+                );
+
+                m_submitQueueFullDrops++;
+                break;
+            }
+
+            used += written;
+            batch_count++;
+
+            if (batch_count >= MAX_BATCH_SIZE) {
+                break;
+            }
+
+            // Drain another queued share immediately.
+            // Do NOT block waiting for the batch to fill.
+            if (xQueueReceive(
+                    m_submitQueue,
+                    &request,
+                    0
+                ) != pdTRUE) {
+                break;
+            }
+        }
+
+        total_format_us +=
+            esp_timer_get_time() - format_start;
+
+        if (batch_count == 0) {
+            continue;
+        }
+
+        // snprintf already null-terminates each appended string.
+        // Make absolutely sure the complete buffer is terminated.
+        batchBuffer[used] = '\0';
+
+        int64_t send_start = esp_timer_get_time();
+
+        bool success =
+            m_stratumAPI.sendRaw(
+                m_transport,
+                batchBuffer
+            );
+
+        total_send_us +=
+            esp_timer_get_time() - send_start;
+
+        total_batches++;
+        total_batch_shares += batch_count;
+
+        uint32_t previous_sent = m_submitSentCount;
+
+        if (success) {
+            m_submitSentCount += batch_count;
+        }
+
+        // Log whenever we cross another 1000-share boundary.
+        if ((previous_sent / 1000) !=
+            (m_submitSentCount / 1000)) {
+
+            uint64_t avg_batch_x100 =
+                total_batches
+                    ? (total_batch_shares * 100) /
+                        total_batches
+                    : 0;
+
             ESP_LOGI(
                 m_tag,
-                "SUBMIT QUEUE: sent=%lu dropped=%lu waiting=%u",
+                "BATCH PROFILE: "
+                "sent=%lu dropped=%lu waiting=%u "
+                "avg_batch=%llu.%02llu "
+                "format/share=%llu us "
+                "send/batch=%llu us",
                 (unsigned long)m_submitSentCount,
                 (unsigned long)m_submitQueueFullDrops,
-                (unsigned)uxQueueMessagesWaiting(m_submitQueue)
+                (unsigned)uxQueueMessagesWaiting(
+                    m_submitQueue
+                ),
+                avg_batch_x100 / 100,
+                avg_batch_x100 % 100,
+                total_batch_shares
+                    ? total_format_us /
+                        total_batch_shares
+                    : 0,
+                total_batches
+                    ? total_send_us /
+                        total_batches
+                    : 0
             );
         }
     }

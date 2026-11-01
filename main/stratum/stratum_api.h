@@ -112,6 +112,22 @@ class StratumApi {
     StratumApi();
     ~StratumApi();
 
+    size_t formatSubmitShare( // new
+        char *dst,
+        size_t dst_size,
+        const char *username,
+        const char *jobid,
+        const char *extranonce_2,
+        uint32_t ntime,
+        uint32_t nonce,
+        uint32_t version
+    );
+
+    bool sendRaw( // new
+        StratumTransport *transport,
+        const char *message
+    );
+
     // Receives a JSON-RPC line (terminated by '\n') from the socket.
     // Returns a dynamically allocated C-string that the caller must free.
     char* receiveJsonRpcLine(StratumTransport *transport);

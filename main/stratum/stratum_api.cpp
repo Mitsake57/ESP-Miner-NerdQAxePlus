@@ -686,6 +686,48 @@ bool StratumApi::submitShare( // new major changes
 
     return result;
 }
+
+size_t StratumApi::formatSubmitShare( // new
+    char *dst,
+    size_t dst_size,
+    const char *username,
+    const char *jobid,
+    const char *extranonce_2,
+    uint32_t ntime,
+    uint32_t nonce,
+    uint32_t version)
+{
+    if (dst == nullptr || dst_size == 0) {
+        return 0;
+    }
+
+    int written = snprintf(
+        dst,
+        dst_size,
+        "{\"id\": %d, \"method\": \"mining.submit\", "
+        "\"params\": [\"%s\", \"%s\", \"%s\", \"%08lx\", \"%08lx\", \"%08lx\"]}\n",
+        m_send_uid++,
+        username,
+        jobid,
+        extranonce_2,
+        ntime,
+        nonce,
+        version
+    );
+
+    if (written < 0 || static_cast<size_t>(written) >= dst_size) {
+        return 0;
+    }
+
+    return static_cast<size_t>(written);
+}
+
+
+bool StratumApi::sendRaw(StratumTransport *transport, const char *message) // new
+{
+    return send(transport, message);
+}
+
 //--------------------------------------------------------------------
 // configureVersionRolling()
 //--------------------------------------------------------------------
