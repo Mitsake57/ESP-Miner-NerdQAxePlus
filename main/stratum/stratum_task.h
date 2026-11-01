@@ -1,8 +1,11 @@
 #pragma once
 
+#include "freertos/FreeRTOS.h" // new
 #include <pthread.h>
 
-#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h" // new
+#include "freertos/task.h" // new
+
 #include "freertos/timers.h"
 #include "lwip/inet.h"
 
@@ -112,6 +115,25 @@ class StratumTaskV1 : public StratumTaskBase {
 
     TcpStratumTransport m_tcpTransport;
     TlsStratumTransport m_tlsTransport;
+
+    struct SubmitRequest { // new start
+        char jobid[64];
+        char extranonce2[32];
+
+        uint32_t ntime;
+        uint32_t nonce;
+        uint32_t version_delta;
+    };
+
+    static constexpr UBaseType_t SUBMIT_QUEUE_LENGTH = 256;
+
+    QueueHandle_t m_submitQueue = nullptr;
+
+    volatile uint32_t m_submitQueueFullDrops = 0;
+    uint32_t m_submitSentCount = 0;
+
+    static void submitTaskWrapper(void *pvParameters);
+    void submitTask(); // new end
 
     void protocolLoop() override;
     void submitShare(const char *jobid, const char *extranonce_2, const uint32_t ntime, const uint32_t nonce,

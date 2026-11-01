@@ -328,9 +328,84 @@ void StratumTaskBase::task()
 // StratumTaskV1
 // ============================================================================
 
-StratumTaskV1::StratumTaskV1(StratumManager *manager, int index)
-    : StratumTaskBase(manager, index)
+StratumTaskV1::StratumTaskV1(StratumManager *manager, int index) : StratumTaskBase(manager, index) // new
 {
+    m_submitQueue = xQueueCreate(
+        SUBMIT_QUEUE_LENGTH,
+        sizeof(SubmitRequest)
+    );
+
+    if (m_submitQueue == nullptr) {
+        ESP_LOGE(m_tag, "Failed to create submit queue");
+        return;
+    }
+
+    const char *task_name =
+        (m_index == 0) ? "submit task (pri)" : "submit task (sec)";
+
+    BaseType_t result = xTaskCreate(
+        submitTaskWrapper,
+        task_name,
+        4096,
+        this,
+        5,
+        nullptr
+    );
+
+    if (result != pdPASS) {
+        ESP_LOGE(m_tag, "Failed to create submit task");
+    }
+}
+
+void StratumTaskV1::submitTaskWrapper(void *pvParameters) // new
+{
+    StratumTaskV1 *self =
+        static_cast<StratumTaskV1 *>(pvParameters);
+
+    self->submitTask();
+}
+
+void StratumTaskV1::submitTask() // new
+{
+    SubmitRequest request;
+
+    while (1) {
+        if (xQueueReceive(
+                m_submitQueue,
+                &request,
+                portMAX_DELAY
+            ) != pdTRUE) {
+            continue;
+        }
+
+        if (!m_isConnected ||
+            m_transport == nullptr ||
+            !m_transport->isConnected()) {
+            continue;
+        }
+
+        m_stratumAPI.submitShare(
+            m_transport,
+            m_config->getUser(),
+            request.jobid,
+            request.extranonce2,
+            request.ntime,
+            request.nonce,
+            request.version_delta
+        );
+
+        m_submitSentCount++;
+
+        if (m_submitSentCount % 1000 == 0) {
+            ESP_LOGI(
+                m_tag,
+                "SUBMIT QUEUE: sent=%lu dropped=%lu waiting=%u",
+                (unsigned long)m_submitSentCount,
+                (unsigned long)m_submitQueueFullDrops,
+                (unsigned)uxQueueMessagesWaiting(m_submitQueue)
+            );
+        }
+    }
 }
 
 StratumTransport* StratumTaskV1::selectTransport()
@@ -343,6 +418,9 @@ StratumTransport* StratumTaskV1::selectTransport()
 
 void StratumTaskV1::protocolLoop()
 {
+    if (m_submitQueue != nullptr) { // new
+        xQueueReset(m_submitQueue);
+    }
     Board *board = SYSTEM_MODULE.getBoard();
 
     m_stratumAPI.resetUid();
@@ -432,10 +510,46 @@ void StratumTaskV1::protocolLoop()
     }
 }
 
-void StratumTaskV1::submitShare(const char *jobid, const char *extranonce_2, const uint32_t ntime, const uint32_t nonce,
-                              const uint32_t version_rolled, const uint32_t version_base)
+void StratumTaskV1::submitShare( // new
+    const char *jobid,
+    const char *extranonce_2,
+    const uint32_t ntime,
+    const uint32_t nonce,
+    const uint32_t version_rolled,
+    const uint32_t version_base)
 {
-    // V1 mining.submit expects version rolling bits (delta), not full version
-    uint32_t version_delta = version_rolled ^ version_base;
-    m_stratumAPI.submitShare(m_transport, m_config->getUser(), jobid, extranonce_2, ntime, nonce, version_delta);
+    if (m_submitQueue == nullptr) {
+        return;
+    }
+
+    SubmitRequest request = {};
+
+    strncpy(
+        request.jobid,
+        jobid,
+        sizeof(request.jobid) - 1
+    );
+
+    strncpy(
+        request.extranonce2,
+        extranonce_2,
+        sizeof(request.extranonce2) - 1
+    );
+
+    request.jobid[sizeof(request.jobid) - 1] = '\0';
+    request.extranonce2[sizeof(request.extranonce2) - 1] = '\0';
+
+    request.ntime = ntime;
+    request.nonce = nonce;
+    request.version_delta =
+        version_rolled ^ version_base;
+
+    if (xQueueSend(
+            m_submitQueue,
+            &request,
+            0
+        ) != pdTRUE) {
+
+        m_submitQueueFullDrops++;
+    }
 }
